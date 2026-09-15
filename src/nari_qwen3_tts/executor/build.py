@@ -70,7 +70,13 @@ def build_cuda_execution(
         ),
         submission_fence=generation_fence,
     )
-    optimizations = install_capture_optimizations(assets, require_talker_fp8=True)
+    # The H100 production contract requires its SM90-only FlashInfer FP8 GEMM.
+    # Development/consumer configurations retain the BF16 checkpoint projection
+    # when that kernel is unavailable while keeping the other CUDA kernels.
+    optimizations = install_capture_optimizations(
+        assets,
+        require_talker_fp8=assets.config.require_h100,
+    )
     code_predictor = CodePredictorExecutor(
         model=assets.code_predictor,
         layer0_embedding=assets.code_predictor_layer0_embedding,

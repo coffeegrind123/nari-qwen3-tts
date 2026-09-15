@@ -80,6 +80,20 @@ talker_decode:
     assert config.stages.talker_decode.batch_sizes[-1] == 24
 
 
+def test_consumer_gpu_support_requires_explicit_profile_and_hardware_override() -> None:
+    default_args = serve._parser().parse_args([])
+    default_config = serve._load_execution_config(profile=default_args.profile, config_path=None)
+    args = serve._parser().parse_args(["--profile", "consumer", "--allow-non-h100"])
+    config = serve._load_execution_config(profile=args.profile, config_path=None)
+
+    assert default_args.allow_non_h100 is False
+    assert default_config.name == ExecutionProfile.TTFA.value
+    assert args.allow_non_h100 is True
+    assert config.name == ExecutionProfile.CONSUMER.value
+    assert config.stages.talker_decode.max_batch_size == 1
+    assert config.resources.talker_capture_slots == 1
+
+
 def test_explicit_server_profile_is_the_base_for_a_profileless_yaml_overlay(tmp_path) -> None:
     path = tmp_path / "engine.yaml"
     path.write_text("kv_pages: 128\n", encoding="utf-8")

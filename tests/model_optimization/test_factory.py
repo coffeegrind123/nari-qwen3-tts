@@ -4,6 +4,7 @@ import importlib
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from nari_qwen3_tts.planner import CaptureCatalog
@@ -17,9 +18,14 @@ from nari_qwen3_tts.profile import (
 )
 
 
-def test_factory_scratch_pages_cover_the_largest_prefill_token_bucket(monkeypatch) -> None:
+@pytest.mark.parametrize("require_h100", [True, False])
+def test_factory_scratch_pages_cover_the_largest_prefill_token_bucket(
+    monkeypatch,
+    require_h100: bool,
+) -> None:
     factory = importlib.import_module("nari_qwen3_tts.executor.build")
     captured_cache_args: dict[str, object] = {}
+    captured_optimization_args: dict[str, object] = {}
 
     class FakeCache:
         def __init__(self, **kwargs) -> None:
@@ -40,7 +46,12 @@ def test_factory_scratch_pages_cover_the_largest_prefill_token_bucket(monkeypatc
     monkeypatch.setattr(factory, "CodecExecutor", FakeComponent)
     monkeypatch.setattr(factory, "TorchCaptureDriver", FakeComponent)
     monkeypatch.setattr(factory, "CudaGraphPoolFence", FakeComponent)
-    monkeypatch.setattr(factory, "install_capture_optimizations", lambda *args, **kwargs: object())
+
+    def install_optimizations(_assets, *, require_talker_fp8: bool):
+        captured_optimization_args["require_talker_fp8"] = require_talker_fp8
+        return object()
+
+    monkeypatch.setattr(factory, "install_capture_optimizations", install_optimizations)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "graphs", FakePool())
 
@@ -88,6 +99,7 @@ def test_factory_scratch_pages_cover_the_largest_prefill_token_bucket(monkeypatc
     )
     weight = torch.empty((1,), dtype=torch.float32)
     assets = SimpleNamespace(
+        config=SimpleNamespace(require_h100=require_h100),
         device=torch.device("cuda"),
         model_config=SimpleNamespace(talker=talker_config, num_code_groups=16),
         talker=SimpleNamespace(get_input_embeddings=lambda: SimpleNamespace(weight=weight)),
@@ -108,3 +120,4 @@ def test_factory_scratch_pages_cover_the_largest_prefill_token_bucket(monkeypatc
     )
 
     assert captured_cache_args["scratch_page_count"] == 8
+    assert captured_optimization_args["require_talker_fp8"] is require_h100

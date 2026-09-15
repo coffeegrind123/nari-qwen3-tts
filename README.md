@@ -1,5 +1,18 @@
 # Nari Qwen3-TTS
 
+> [!IMPORTANT]
+> **About this fork:** this fork adds an experimental, opt-in consumer-GPU
+> profile for people who want to run Nari Qwen3-TTS on NVIDIA hardware other
+> than an H100. The upstream H100/FP8 path remains the default and is unchanged.
+> The portable path keeps the Talker projection in BF16 and reduces the CUDA
+> Graph, KV-cache, and FlashInfer workspace footprint for single-request use.
+>
+> It has been validated on an RTX 5060 Ti 16 GB (SM 120), where the resident
+> service used about 6.6 GiB of VRAM and reached first audible audio in 47 ms
+> median / 57 ms p95 over a 90-utterance local panel. These measurements do not
+> claim upstream's H100 throughput. See the reproducible
+> [Model Skyline comparison](https://github.com/bglusman/model_skyline/blob/main/examples/voice-runtime-frontiers/README.md#what-the-matched-winner-comparison-adds).
+
 ## TL;DR
 
 Nari Qwen3-TTS is a high-performance, single-H100 serving implementation of
@@ -24,7 +37,10 @@ Below is a performance comparison with popular serving engines.
 
 ## Run with Docker
 
-The container requires an NVIDIA H100, the NVIDIA Container Toolkit, and a driver compatible with CUDA 13.0. The published image supports Linux x86_64 (`linux/amd64`) H100 hosts. The engine has been tested only with English as the primary language.
+The default production configuration requires an NVIDIA H100, the NVIDIA
+Container Toolkit, and a driver compatible with CUDA 13.0. The published image
+supports Linux x86_64 (`linux/amd64`) NVIDIA GPU hosts. The engine has been
+tested only with English as the primary language.
 
 ```bash
 docker run --rm --gpus all \
@@ -34,6 +50,36 @@ docker run --rm --gpus all \
   -v nari-qwen3-tts-cache:/home/nari/.cache \
   ghcr.io/nari-labs/nari-qwen3-tts:latest
 ```
+
+### Consumer GPUs (experimental)
+
+The `consumer` profile provides a single-request, memory-reduced capture
+surface for CUDA GPUs with roughly 16 GB of VRAM. It keeps BF16 Talker weights
+on devices that cannot run the Hopper-only FP8 GEMM, uses one Talker capture
+slot, and reduces the KV cache and FlashInfer workspace. This is an explicit
+opt-in: omitting `--allow-non-h100` preserves the upstream H100 requirement.
+Start it with `uv`:
+
+```bash
+nari-qwen3-tts-server \
+  --profile consumer \
+  --allow-non-h100
+```
+
+Or, after building this tree as `nari-qwen3-tts:local`, pass the opt-in through
+the container entrypoint:
+
+```bash
+docker run --rm --gpus all \
+  -p 8000:8000 \
+  -e QWEN3_TTS_PROFILE=consumer \
+  -v nari-qwen3-tts-cache:/home/nari/.cache \
+  nari-qwen3-tts:local \
+  --allow-non-h100
+```
+
+This compatibility path does not claim the H100 latency or throughput numbers.
+The packaged H100 profiles and their strict FP8 requirement are unchanged.
 
 Model files and compiled kernels are cached in the named volume. Once model
 loading and CUDA Graph capture finish, check readiness with:
@@ -84,6 +130,8 @@ from nari_qwen3_tts import ModelAssetConfig, open_model
   sustained request throughput.
 - `throughput`: uses larger Codec chunks and batches to prioritize aggregate
   throughput under load.
+- `consumer`: limits execution to one GPU row and a reduced capture/cache
+  surface for experimental use on roughly 16 GB CUDA GPUs.
 
 Select a Docker profile with `QWEN3_TTS_PROFILE`, or pass `--profile` to
 `nari-qwen3-tts-server`. You can also set `QWEN3_TTS_MODEL_CACHE_DIR` and
@@ -97,10 +145,11 @@ nari-qwen3-tts-server \
   --engine-config /path/to/engine.yaml
 ```
 
-The overlay may name its packaged base with `extends: ttfa`, `balanced`, or
-`throughput`; alternatively, pass `--profile` and omit `extends`. Unknown keys,
-invalid capture lists, and profile/base mismatches fail before model loading.
-The fully resolved config and its SHA-256 are printed at startup.
+The overlay may name its packaged base with `extends: ttfa`, `balanced`,
+`throughput`, or `consumer`; alternatively, pass `--profile` and omit `extends`.
+Unknown keys, invalid capture lists, and profile/base mismatches fail before
+model loading. The fully resolved config and its SHA-256 are printed at
+startup.
 
 ## API and architecture
 

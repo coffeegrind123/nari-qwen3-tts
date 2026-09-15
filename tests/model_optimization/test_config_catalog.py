@@ -27,13 +27,14 @@ from nari_qwen3_tts.profile import (
 
 
 @pytest.mark.parametrize(
-    ("profile", "policy", "lead_s", "chunks", "max_batch"),
+    ("profile", "policy", "lead_s", "chunks", "prefill_max_batch", "max_batch"),
     [
         (
             ExecutionProfile.TTFA,
             RequiredSchedulingPolicy.DEADLINE_AWARE,
             1.0,
             (2, 4, 8, 12),
+            8,
             32,
         ),
         (
@@ -41,6 +42,7 @@ from nari_qwen3_tts.profile import (
             RequiredSchedulingPolicy.ROUND_ROBIN,
             None,
             (4, 4, 8, 16, 25),
+            8,
             64,
         ),
         (
@@ -48,7 +50,16 @@ from nari_qwen3_tts.profile import (
             RequiredSchedulingPolicy.ROUND_ROBIN,
             None,
             (25,),
+            8,
             64,
+        ),
+        (
+            ExecutionProfile.CONSUMER,
+            RequiredSchedulingPolicy.ROUND_ROBIN,
+            None,
+            (2, 4, 8, 12),
+            1,
+            1,
         ),
     ],
 )
@@ -57,6 +68,7 @@ def test_required_profiles_define_dynamic_capacity_and_policy_metadata(
     policy: RequiredSchedulingPolicy,
     lead_s: float | None,
     chunks: tuple[int, ...],
+    prefill_max_batch: int,
     max_batch: int,
 ) -> None:
     config = ProfileLoader().load_profile(profile)
@@ -65,7 +77,7 @@ def test_required_profiles_define_dynamic_capacity_and_policy_metadata(
     assert config.policy.kind is policy
     assert config.policy.pressing_lead_s == lead_s
     assert config.codec_chunks(silent_bootstrap_suppressed=True) == chunks
-    assert config.stages.talker_prefill.max_batch_size == 8
+    assert config.stages.talker_prefill.max_batch_size == prefill_max_batch
     assert config.stages.talker_decode.max_batch_size == max_batch
     assert config.stages.code_predictor.max_batch_size == max_batch
     assert config.stages.codec.max_batch_size == max_batch
@@ -111,6 +123,28 @@ def test_required_profiles_fix_every_stage_capture_surface_to_the_slo_configs() 
     assert throughput.stages.code_predictor.batch_sizes == dense_b64
     assert throughput.stages.codec.batches.warm_full == dense_b64
     assert throughput.stages.codec.frames.warm == (*range(1, 13), 25)
+
+    consumer = ProfileLoader().load_profile(ExecutionProfile.CONSUMER)
+    assert consumer.stages.talker_prefill.max_batch_size == 1
+    assert consumer.stages.talker_decode == BatchCaptureConfig(1, (1,))
+    assert consumer.stages.code_predictor == BatchCaptureConfig(1, (1,))
+    assert consumer.stages.codec.batches == CodecBatchCaptureConfig(
+        whole_sequence_first_frame=(1,),
+        whole_sequence_followup=(1,),
+        cold=(1,),
+        warm_partial=(1,),
+        warm_full=(1,),
+    )
+    assert consumer.stages.codec.frames == CodecFrameCaptureConfig(
+        cold=(4, 6, 7),
+        warm=(1, 8, 12),
+        warm_full=(1, 8, 12),
+        terminal_pad=(8, 12),
+    )
+    assert consumer.resources.talker_capture_slots == 1
+    assert consumer.resources.kv_pages == 32
+    assert consumer.resources.workspace_bytes == 128 * 1024 * 1024
+    CaptureCatalog.from_config(consumer.stages).validate_codec_schedule((1,))
 
 
 def test_ttfa_dense_b32_lowers_exercised_generation_cohorts_to_b24() -> None:

@@ -69,7 +69,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--revision")
     parser.add_argument("--model-cache-dir")
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--profile", choices=("ttfa", "balanced", "throughput"))
+    parser.add_argument("--profile", choices=("ttfa", "balanced", "throughput", "consumer"))
     parser.add_argument(
         "--engine-config",
         type=Path,
@@ -85,6 +85,11 @@ def _parser() -> argparse.ArgumentParser:
         default="The Nari Qwen three T T S engine is ready.",
     )
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument(
+        "--allow-non-h100",
+        action="store_true",
+        help="allow CUDA GPUs other than H100 and use portable BF16 math when Hopper-only FP8 is unavailable",
+    )
     parser.add_argument(
         "--trace-output",
         type=Path,
@@ -148,7 +153,7 @@ def main() -> None:
             revision=args.revision,
             cache_dir=args.model_cache_dir,
             device=args.device,
-            require_h100=True,
+            require_h100=not args.allow_non_h100,
             local_files_only=args.local_files_only,
         )
     )

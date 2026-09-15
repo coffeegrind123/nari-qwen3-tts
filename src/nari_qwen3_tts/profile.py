@@ -65,6 +65,7 @@ class ExecutionProfile(str, Enum):
     TTFA = "ttfa"
     BALANCED = "balanced"
     THROUGHPUT = "throughput"
+    CONSUMER = "consumer"
 
 
 class RequiredSchedulingPolicy(str, Enum):
