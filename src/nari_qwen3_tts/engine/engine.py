@@ -44,6 +44,8 @@ from nari_qwen3_tts.engine.pipeline import SynthesisPipeline
 from nari_qwen3_tts.engine.state import LiveInputState
 from nari_qwen3_tts.executor.executor import Executor
 from nari_qwen3_tts.executor.pcm import PcmTransferPool
+from nari_qwen3_tts.model.input_layout import ResolvedVoice
+from nari_qwen3_tts.model.voices import VoiceModeError, VoiceNotFoundError, VoiceRegistry
 from nari_qwen3_tts.planner.catalog import CaptureCoverageError
 
 
@@ -86,6 +88,11 @@ def _empty_health() -> EngineHealth:
 class Engine:
     """Own request lifecycle and concrete GPU execution on one Engine thread."""
 
+    # Class defaults keep partially constructed engines (tests, probes) on the
+    # preset-speaker path; __init__ sets real values for Base checkpoints.
+    voices: VoiceRegistry | None = None
+    voice_builder = None
+
     def __init__(
         self,
         model,
@@ -94,8 +101,13 @@ class Engine:
         pipeline: SynthesisPipeline,
         capture_catalog,
         config: EngineConfig | None = None,
+        voices: VoiceRegistry | None = None,
+        voice_builder=None,
     ) -> None:
         self.model = model
+        self.voices = voices
+        self.voice_builder = voice_builder
+        self._voice_pins: dict[str, str] = {}
         self.executor = executor
         self.pipeline = pipeline
         self.catalog = capture_catalog
@@ -163,21 +175,51 @@ class Engine:
             if live
             else self.model.prepare(request)
         )
-        plan = self.executor.talker.prepare_prepared_inputs([prepared])
-        admitted = make_admitted_request(
-            request_id=request_id,
-            request=prepared.request,
-            talker_plan=plan,
-            execution_config=self.executor.config,
-            admitted_at_s=admitted_at_s,
-            input_finished=input_finished,
-        )
+        voices, pinned_voice = self._resolve_voice(request, live=live)
         try:
-            self.catalog.lower_talker_prefill(plan.sequence_lengths)
-            self.catalog.validate_codec_schedule(admitted.chunk_schedule)
-        except CaptureCoverageError as error:
+            talker = self.executor.talker
+            plan = (
+                talker.prepare_prepared_inputs([prepared])
+                if voices is None
+                else talker.prepare_prepared_inputs([prepared], voices=voices)
+            )
+            admitted = make_admitted_request(
+                request_id=request_id,
+                request=prepared.request,
+                talker_plan=plan,
+                execution_config=self.executor.config,
+                admitted_at_s=admitted_at_s,
+                input_finished=input_finished,
+            )
+            try:
+                self.catalog.lower_talker_prefill(plan.sequence_lengths)
+                self.catalog.validate_codec_schedule(admitted.chunk_schedule)
+            except CaptureCoverageError as error:
+                raise RequestRejected(str(error)) from error
+            self.pipeline.admit(admitted)
+        except BaseException:
+            if pinned_voice is not None:
+                self.voices.release(pinned_voice)
+            raise
+        if pinned_voice is not None:
+            self._voice_pins[request_id] = pinned_voice
+
+    def _resolve_voice(self, request: SynthesisRequest, *, live: bool) -> tuple[list[ResolvedVoice] | None, str | None]:
+        """Map the request's voice to Talker conditioning; pins clone prompts until removal."""
+        if self.voices is None:
+            model_config = getattr(self.model, "model_config", None)
+            if model_config is not None and request.voice not in model_config.talker.spk_id:
+                raise RequestRejected(f"unknown voice {request.voice!r}; this checkpoint serves preset speakers only")
+            return None, None
+        if request.instruct:
+            raise RequestRejected("the Base checkpoint has no instruction control; remove instruct/instructions")
+        try:
+            resolved = self.voices.acquire(request.voice, mode=request.voice_mode, live=live)
+        except VoiceNotFoundError as error:
+            raise RequestRejected(f"unknown voice {request.voice!r}; register it first") from error
+        except VoiceModeError as error:
             raise RequestRejected(str(error)) from error
-        self.pipeline.admit(admitted)
+        return [resolved], request.voice
 
     def _update_request_input_batch(
         self,
@@ -251,6 +293,9 @@ class Engine:
         if state.codec.pending_outputs < 0:
             raise RuntimeError("pending PCM output count underflowed")
         self.pipeline.remove(request_id)
+        pinned_voice = self.__dict__.get("_voice_pins", {}).pop(request_id, None)
+        if pinned_voice is not None:
+            self.voices.release(pinned_voice)
 
     @property
     def engine_thread_id(self) -> int | None:

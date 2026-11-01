@@ -8,6 +8,9 @@ from pathlib import Path
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 DEFAULT_MODEL_REVISION = "0c0e3051f131929182e2c023b9537f8b1c68adfe"
+BASE_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+BASE_MODEL_REVISION = "fd4b254389122332181a7c3db7f27e918eec64e3"
+DEFAULT_VOICE_TABLE_ROWS = 16_384
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +97,7 @@ class EngineConfig:
     idle_poll_interval_s: float = 0.0005
     max_buffered_pcm_bytes: int = 8 * 1024 * 1024
     live_input: LiveInputConfig = field(default_factory=LiveInputConfig)
+    voice_table_rows: int = DEFAULT_VOICE_TABLE_ROWS
 
     def __post_init__(self) -> None:
         for name in (
@@ -101,6 +105,7 @@ class EngineConfig:
             "command_capacity",
             "max_commands_per_turn",
             "max_buffered_pcm_bytes",
+            "voice_table_rows",
         ):
             _positive_integer(name, getattr(self, name))
         _positive_float("idle_poll_interval_s", self.idle_poll_interval_s)

@@ -130,6 +130,20 @@ class Qwen3TTSTextDomain:
             instruct_token_ids=instruct_ids,
         )
 
+    def tokenize_ref_text(self, ref_text: str) -> torch.Tensor:
+        """Official ICL reference ids: ``tokenize(<|im_start|>assistant\n{ref}<|im_end|>\n)[3:-2]``."""
+        if not isinstance(ref_text, str) or not ref_text.strip():
+            raise ValueError("reference transcript cannot be empty")
+        self._validate_target_control_tokens(ref_text)
+        with self._tokenizer_lock:
+            ids = self.tokenizer(f"{self._ASSISTANT_PREFIX}{ref_text}<|im_end|>\n", return_tensors="pt")[
+                "input_ids"
+            ][0].to(torch.long)
+        ref_ids = ids[3:-2]
+        if ref_ids.numel() < 1:
+            raise ValueError("reference transcript produced no tokens")
+        return ref_ids
+
     def prepare_live(
         self,
         request: SynthesisRequest,

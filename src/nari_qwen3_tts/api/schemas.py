@@ -40,6 +40,7 @@ class _SynthesisControls(_StrictModel):
     stream_chunk_frames: Annotated[int, Field(ge=1, le=128)] | None = None
     stream_first_chunk_frames: Annotated[int, Field(ge=1, le=128)] | None = None
     stream_steady_chunk_frames: Annotated[int, Field(ge=1, le=128)] | None = None
+    voice_mode: Literal["auto", "icl", "xvector"] = "auto"
 
     def _controls(self) -> dict[str, object]:
         return {name: getattr(self, name) for name in _SynthesisControls.model_fields}
@@ -104,6 +105,35 @@ class WebSocketStart(_SynthesisControls):
         ).to_domain(served_model_id=served_model_id)
 
 
+_VOICE_ID_PATTERN = r"^[a-z0-9][a-z0-9_]{0,63}$"
+MAX_REFERENCE_AUDIO_BASE64_CHARACTERS = 64 * 1024 * 1024
+
+
+class VoiceBuildBody(_StrictModel):
+    """Build a clone prompt from reference audio and register it."""
+
+    voice_id: Annotated[str, Field(pattern=_VOICE_ID_PATTERN)]
+    audio_base64: Annotated[str, Field(min_length=16, max_length=MAX_REFERENCE_AUDIO_BASE64_CHARACTERS)]
+    ref_text: str | None = None
+    x_vector_only: bool = False
+    # Optional longer speech (e.g. every cleaned clip) for a steadier speaker embedding;
+    # the reference audio is used when omitted, as in the official implementation.
+    xvector_audio_base64: Annotated[str | None, Field(max_length=MAX_REFERENCE_AUDIO_BASE64_CHARACTERS)] = None
+
+
+class VoiceInfoBody(_StrictModel):
+    voice_id: str
+    supports_icl: bool
+    frames: int
+    rows: int
+    pins: int
+
+
+class VoiceBuildResult(_StrictModel):
+    voice: VoiceInfoBody
+    prompt_base64: str
+
+
 class WebSocketAppend(_StrictModel):
     type: Literal["input_text.append"]
     sequence: Annotated[int, Field(ge=0)]
@@ -121,6 +151,9 @@ class WebSocketCancel(_StrictModel):
 
 __all__ = [
     "SpeechRequestBody",
+    "VoiceBuildBody",
+    "VoiceBuildResult",
+    "VoiceInfoBody",
     "WebSocketAppend",
     "WebSocketCancel",
     "WebSocketEnd",

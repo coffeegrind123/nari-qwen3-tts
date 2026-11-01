@@ -14,6 +14,7 @@ from nari_qwen3_tts.api.http import error_response, stream_bytes
 from nari_qwen3_tts.api.schemas import (
     SpeechRequestBody,
 )
+from nari_qwen3_tts.api.voices import build_voice_router
 from nari_qwen3_tts.api.wav import SAMPLE_RATE, wav_header
 from nari_qwen3_tts.api.websocket import WS_PROTOCOL, handle_speech_websocket
 from nari_qwen3_tts.config import DEFAULT_MODEL_ID, ApiConfig
@@ -128,6 +129,8 @@ def create_app(  # noqa: PLR0915
             )
         except BaseException as error:
             raise error_response(error) from error
+
+    app.include_router(build_voice_router(engine))
 
     @app.websocket("/v1/audio/speech/ws")
     async def speech_websocket_endpoint(websocket: WebSocket) -> None:

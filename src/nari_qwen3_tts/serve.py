@@ -69,7 +69,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--revision")
     parser.add_argument("--model-cache-dir")
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--profile", choices=("ttfa", "balanced", "throughput", "consumer"))
+    parser.add_argument("--profile", choices=("ttfa", "balanced", "throughput", "consumer", "ada24g"))
     parser.add_argument(
         "--engine-config",
         type=Path,
@@ -85,6 +85,12 @@ def _parser() -> argparse.ArgumentParser:
         default="The Nari Qwen three T T S engine is ready.",
     )
     parser.add_argument("--local-files-only", action="store_true")
+    parser.add_argument(
+        "--voice-table-rows",
+        type=int,
+        default=None,
+        help="voice-row pool size for Base checkpoints (one row per x-vector plus one per reference frame)",
+    )
     parser.add_argument(
         "--allow-non-h100",
         action="store_true",
@@ -117,6 +123,8 @@ def _validate_arguments(args: argparse.Namespace) -> None:
         raise ValueError("max buffered PCM bytes must be positive")
     if not math.isfinite(args.startup_timeout_seconds) or args.startup_timeout_seconds <= 0:
         raise ValueError("startup timeout seconds must be finite and positive")
+    if args.voice_table_rows is not None and args.voice_table_rows < 2:
+        raise ValueError("voice table rows must be at least 2")
 
 
 def _load_execution_config(*, profile: str | None, config_path: Path | None):
@@ -131,6 +139,28 @@ def _load_execution_config(*, profile: str | None, config_path: Path | None):
         return loader.load_profile(ExecutionProfile(profile or "ttfa"))
     base = ExecutionProfile(profile) if profile is not None else None
     return loader.load_yaml(config_path, base=base)
+
+
+READINESS_VOICE_ID = "readiness_probe"
+
+
+def _register_readiness_voice(engine) -> str:
+    """Give the Base checkpoint's readiness proof a voice to speak with.
+
+    The proof only has to exercise prefill, decode and codec end to end; its
+    audio is discarded. A zero x-vector is a valid, finite speaker row.
+    """
+    import torch
+
+    from nari_qwen3_tts.model.voices import VoicePrompt
+
+    engine.voices.register(
+        VoicePrompt(
+            voice_id=READINESS_VOICE_ID,
+            x_vector=torch.zeros(engine.voices.hidden_size, dtype=torch.float32),
+        )
+    )
+    return READINESS_VOICE_ID
 
 
 def main() -> None:
@@ -179,14 +209,18 @@ def main() -> None:
         engine_config=EngineConfig(
             max_active_requests=args.max_active_requests,
             max_buffered_pcm_bytes=args.max_buffered_pcm_bytes,
+            **({} if args.voice_table_rows is None else {"voice_table_rows": args.voice_table_rows}),
         ),
         capture=True,
         trace_enabled=False,
     )
+    readiness_voice = "aiden"
+    if engine.voices is not None:
+        readiness_voice = _register_readiness_voice(engine)
     engine.start(
         SynthesisRequest(
             text=args.readiness_text,
-            voice="aiden",
+            voice=readiness_voice,
             language="english",
             non_streaming_mode=True,
             random_seed=1_234,
@@ -199,6 +233,14 @@ def main() -> None:
         ),
         timeout_s=args.startup_timeout_seconds,
     )
+    if engine.voices is not None:
+        from nari_qwen3_tts.model.voices import VoiceModeError
+
+        try:
+            engine.voices.unregister(readiness_voice)
+        except VoiceModeError:
+            # Still pinned by the retiring probe; idle voices are evicted LRU-first.
+            pass
     print("Startup complete.", flush=True)
     api_config = ApiConfig(startup_timeout_s=args.startup_timeout_seconds)
     app = create_app(

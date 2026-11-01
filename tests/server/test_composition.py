@@ -2,10 +2,12 @@ from __future__ import annotations
 
 
 def test_factory_passes_concrete_components_to_the_engine(monkeypatch) -> None:
+    from types import SimpleNamespace
+
     from nari_qwen3_tts import factory
 
     model = object()
-    assets = object()
+    assets = SimpleNamespace(model_config=SimpleNamespace(is_base=False))
     executor = object()
     pipeline = object()
     catalog = object()
@@ -38,4 +40,6 @@ def test_factory_passes_concrete_components_to_the_engine(monkeypatch) -> None:
         "pipeline": pipeline,
         "capture_catalog": catalog,
         "config": engine_config,
+        "voices": None,
+        "voice_builder": None,
     }
