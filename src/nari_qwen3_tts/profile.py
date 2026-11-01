@@ -66,6 +66,9 @@ class ExecutionProfile(str, Enum):
     BALANCED = "balanced"
     THROUGHPUT = "throughput"
     CONSUMER = "consumer"
+    # 24 GB Ada (RTX 4090): BF16 Talker, room for ICL clone prompts up to 1024
+    # prefill tokens, and a KV budget that leaves VRAM for the audio worker.
+    ADA24G = "ada24g"
 
 
 class RequiredSchedulingPolicy(str, Enum):
