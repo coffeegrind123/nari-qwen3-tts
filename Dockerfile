@@ -6,9 +6,9 @@ FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04
 ARG CUDA_VERSION
 ARG PYTHON_VERSION=3.12.13
 
-LABEL org.opencontainers.image.title="Nari Qwen3-TTS" \
-      org.opencontainers.image.description="CUDA Graph-only Qwen3-TTS HTTP/WebSocket server" \
-      org.opencontainers.image.source="https://github.com/nari-labs/nari-qwen3-tts"
+LABEL org.opencontainers.image.title="Nari Qwen3-TTS (voice-clone fork)" \
+      org.opencontainers.image.description="CUDA Graph Qwen3-TTS server with Base-model voice cloning and consumer-GPU profiles" \
+      org.opencontainers.image.source="https://github.com/coffeegrind123/nari-qwen3-tts"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
@@ -45,6 +45,12 @@ COPY pyproject.toml uv.lock .python-version ./
 RUN uv python install "${PYTHON_VERSION}" \
     && uv sync --frozen --no-dev --no-install-project \
         --extra codec --extra cuda --extra serving
+
+# Prebuilt FlashInfer kernels (CUDA 13.0, Ampere through Blackwell incl. sm_89) so the
+# server never nvcc-compiles attention kernels at startup. Pinned to the locked flashinfer.
+ARG FLASHINFER_JIT_CACHE=flashinfer-jit-cache==0.6.16.post2+cu130
+RUN uv pip install --python /opt/nari-qwen3-tts/.venv/bin/python --no-deps \
+        --index-url https://flashinfer.ai/whl/cu130 "${FLASHINFER_JIT_CACHE}"
 
 COPY README.md ./
 COPY src ./src
