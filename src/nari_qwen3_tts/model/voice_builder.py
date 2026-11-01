@@ -2,7 +2,10 @@
 
 Mirrors ``Qwen3TTSModel.create_voice_clone_prompt`` from qwen-tts 0.1.1:
 
-* ref codes : ``speech_tokenizer.encode(wav, sr)`` (12 Hz, 16 codebooks)
+* ref codes : ``speech_tokenizer.encode(wav, sr)`` (12 Hz, 16 codebooks) with the
+              tokenizer in BF16 like the official model. The engine's decoder copy
+              runs in FP32, and encoding with it flips up to ~64 % of the deeper
+              residual codes (measured), so the builder keeps its own BF16 copy.
 * x-vector  : ``speaker_encoder(mel(wav @ 24 kHz))`` with n_fft 1024,
               128 mels, hop 256, win 1024, fmin 0, fmax 12 kHz, run in the
               model dtype (BF16) like the official model.
@@ -34,14 +37,13 @@ def _quiet_qwen_tts_import():
 
 
 class VoicePromptBuilder:
-    """Own the speaker encoder and reuse the engine's loaded speech tokenizer."""
+    """Own the speaker encoder and a BF16 speech tokenizer used only for encoding."""
 
     def __init__(
         self,
         *,
         model_directory: Path,
         speaker_encoder_config: dict,
-        codec_model: torch.nn.Module,
         device: torch.device,
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
@@ -49,8 +51,6 @@ class VoicePromptBuilder:
             from qwen_tts.core.models.configuration_qwen3_tts import Qwen3TTSSpeakerEncoderConfig
             from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder
             from qwen_tts.inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
-        from transformers import AutoFeatureExtractor
-
         from nari_qwen3_tts.model.loader import iter_safetensors_shards
 
         self.device = device
@@ -66,14 +66,11 @@ class VoicePromptBuilder:
         encoder.load_state_dict(state, strict=True)
         self.speaker_encoder = encoder.to(device=device, dtype=dtype).eval()
 
-        tokenizer = Qwen3TTSTokenizer()
-        tokenizer.model = codec_model
-        tokenizer.feature_extractor = AutoFeatureExtractor.from_pretrained(str(model_directory / "speech_tokenizer"))
-        tokenizer.config = codec_model.config
-        tokenizer.device = device
-        self.speech_tokenizer = tokenizer
-        # The codec decoder runs inside captured graphs on the engine thread;
-        # encoder calls are serialized among themselves.
+        self.speech_tokenizer = Qwen3TTSTokenizer.from_pretrained(
+            str(model_directory / "speech_tokenizer"), device_map=str(device), dtype=dtype
+        )
+        self.speech_tokenizer.model.eval()
+        # Prompt building is independent of the engine's captured graphs; builds serialize among themselves.
         self._lock = threading.Lock()
 
     @torch.inference_mode()

@@ -44,21 +44,13 @@ def official(device):
 
 @pytest.fixture(scope="module")
 def builder(device):
-    with contextlib.redirect_stdout(io.StringIO()):
-        from qwen_tts.inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
-
     from nari_qwen3_tts.model.config import Qwen3TTSConfig
     from nari_qwen3_tts.model.voice_builder import VoicePromptBuilder
 
     config = Qwen3TTSConfig.from_pretrained_dir(BASE_DIR)
-    # Same load path as CheckpointLoader.load_codec + load_assets (BF16 load, then float()).
-    codec = Qwen3TTSTokenizer.from_pretrained(
-        str(Path(BASE_DIR) / "speech_tokenizer"), device_map=str(device), dtype=torch.bfloat16
-    ).model.eval().float()
     return VoicePromptBuilder(
         model_directory=Path(BASE_DIR),
         speaker_encoder_config=config.speaker_encoder.raw,
-        codec_model=codec,
         device=device,
     )
 
@@ -74,9 +66,8 @@ def test_xvector_and_codes_match_official(official, builder) -> None:
 
     reference_codes = expected.ref_code.cpu().to(torch.long)
     assert prompt.ref_codes.shape == reference_codes.shape
-    agreement = (prompt.ref_codes == reference_codes).float().mean().item()
-    # The engine's codec runs in FP32 (the official tokenizer in BF16); a few boundary codes may flip.
-    assert agreement > 0.9, agreement
+    # Same BF16 tokenizer as the official model: codes must be identical in every codebook.
+    assert torch.equal(prompt.ref_codes, reference_codes)
 
 
 def test_reference_text_ids_match_official(official) -> None:

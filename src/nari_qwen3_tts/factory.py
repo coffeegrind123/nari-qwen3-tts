@@ -90,7 +90,6 @@ def build_qwen3_tts_engine(
         voice_builder = VoicePromptBuilder(
             model_directory=model.checkpoint.local_directory,
             speaker_encoder_config=speaker_encoder.raw,
-            codec_model=assets.codec,
             device=assets.device,
         )
     executor, pipeline, capture_catalog = _build_engine_components(
