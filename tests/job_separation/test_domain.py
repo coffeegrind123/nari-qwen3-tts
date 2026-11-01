@@ -34,8 +34,10 @@ def test_public_request_rejects_bool_as_int_and_invalid_text(kwargs) -> None:
         SynthesisRequest(**kwargs)
 
 
-def test_unknown_voice_and_language_fail_closed() -> None:
-    with pytest.raises(ValueError, match="speaker"):
-        SynthesisRequest(text="hello", voice="unknown")
+def test_malformed_voice_and_unknown_language_fail_closed() -> None:
+    # Voice existence is checked at admission (presets or registered clones);
+    # the contract rejects names that can never be valid.
+    with pytest.raises(ValueError, match="voice name"):
+        SynthesisRequest(text="hello", voice="no/such voice!")
     with pytest.raises(ValueError, match="language"):
         SynthesisRequest(text="hello", language="unknown")

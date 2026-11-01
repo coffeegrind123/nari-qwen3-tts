@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Protocol
 
 import torch
@@ -32,6 +34,24 @@ SUPPORTED_LANGUAGES = (
     "russian",
     "spanish",
 )
+
+
+# Registered clone voices share the speaker field with presets. The engine
+# resolves the name at admission against the loaded checkpoint (presets) or the
+# voice registry (Base checkpoints), so the contract only checks the shape.
+_VOICE_NAME = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+
+
+class VoiceCloneMode(str, Enum):
+    """How a registered reference prompt conditions the Talker.
+
+    AUTO uses ICL when the voice has reference codes and a transcript,
+    otherwise the x-vector alone (the official ``x_vector_only_mode``).
+    """
+
+    AUTO = "auto"
+    ICL = "icl"
+    XVECTOR = "xvector"
 
 
 def _normalize_choice(value: object, *, field: str) -> str:
@@ -81,6 +101,7 @@ class SynthesisRequest:
     stream_chunk_frames: int | None = None
     stream_first_chunk_frames: int | None = None
     stream_steady_chunk_frames: int | None = None
+    voice_mode: VoiceCloneMode = VoiceCloneMode.AUTO
 
     def __post_init__(self) -> None:  # noqa: PLR0912,PLR0915 - fail-closed validation is centralized
         if not isinstance(self.text, str):
@@ -91,8 +112,15 @@ class SynthesisRequest:
             raise TypeError("instruct must be a string")
         voice = _normalize_choice(self.voice, field="speaker")
         language = _normalize_choice(self.language, field="language")
-        if voice not in SUPPORTED_SPEAKERS:
-            raise ValueError(f"unsupported speaker: {self.voice!r}")
+        if not _VOICE_NAME.fullmatch(voice):
+            raise ValueError(f"invalid voice name: {self.voice!r}")
+        if isinstance(self.voice_mode, str) and not isinstance(self.voice_mode, VoiceCloneMode):
+            try:
+                object.__setattr__(self, "voice_mode", VoiceCloneMode(self.voice_mode))
+            except ValueError as error:
+                raise ValueError(f"unsupported voice_mode: {self.voice_mode!r}") from error
+        if not isinstance(self.voice_mode, VoiceCloneMode):
+            raise TypeError("voice_mode must be a VoiceCloneMode")
         if language not in SUPPORTED_LANGUAGES:
             raise ValueError(f"unsupported language: {self.language!r}")
         object.__setattr__(self, "voice", voice)
@@ -409,6 +437,7 @@ __all__ = [
     "FragmentTokenization",
     "SUPPORTED_LANGUAGES",
     "SUPPORTED_SPEAKERS",
+    "VoiceCloneMode",
     "SynthesisRequest",
     "TalkerPrompt",
     "TextContinuation",
