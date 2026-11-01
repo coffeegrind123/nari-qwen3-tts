@@ -155,3 +155,14 @@ def test_request_contract_accepts_clone_names_and_modes() -> None:
         SynthesisRequest(text="hi", voice="v_01abc", voice_mode="karaoke")
     with pytest.raises(ValueError, match="voice name"):
         SynthesisRequest(text="hi", voice="../etc/passwd")
+
+
+def test_registry_built_under_inference_mode_accepts_later_registrations() -> None:
+    # build_qwen3_tts_engine runs under @torch.inference_mode(), so the table is an
+    # inference tensor; serve.py and the HTTP API register voices outside that mode.
+    with torch.inference_mode():
+        registry = _registry()
+    prompt = _prompt("late", frames=2)
+    registry.register(prompt)
+    voice = registry.acquire("late", mode=VoiceCloneMode.ICL, live=False)
+    torch.testing.assert_close(registry.table[voice.speaker_codec_id], prompt.x_vector)

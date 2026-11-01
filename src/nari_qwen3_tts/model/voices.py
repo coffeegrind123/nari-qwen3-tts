@@ -259,7 +259,9 @@ class VoiceRegistry:
                         f"{self._allocator.largest_free} available and every resident voice is in use"
                     )
                 start = self._allocator.allocate(rows)
-            with torch.no_grad():
+            # The engine builds this table under torch.inference_mode(), making it an inference
+            # tensor that may only be updated in place inside that mode.
+            with torch.inference_mode():
                 self.table[start : start + rows].copy_(block)
             if self.device.type == "cuda":
                 torch.cuda.current_stream(self.device).synchronize()
@@ -335,7 +337,7 @@ class VoiceRegistry:
 
     # ---- internals ------------------------------------------------------------------
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _prompt_rows(self, prompt: VoicePrompt) -> torch.Tensor:
         """Build ``[1 + T, hidden]`` rows exactly as qwen-tts 0.1.1 builds the embeddings.
 
