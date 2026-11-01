@@ -9,7 +9,9 @@ import torch
 
 from nari_qwen3_tts.contract.request import TextContinuation
 from nari_qwen3_tts.model.input_layout import (
-    build_batched_custom_voice_talker_token_layout,
+    ResolvedVoice,
+    build_batched_talker_token_layout,
+    resolve_preset_voice,
 )
 
 
@@ -95,10 +97,20 @@ def prepare_talker_input_plan(
     text_inputs: list[torch.Tensor],
     instruct_inputs: list[torch.Tensor],
     languages: list[str],
-    speakers: list[str],
+    speakers: list[str] | None = None,
     non_streaming_modes: list[bool],
+    voices: list[ResolvedVoice] | None = None,
 ) -> TalkerInputPlan:
-    """Prepare both official input modes through one explicit typed surface."""
+    """Prepare both official input modes through one explicit typed surface.
+
+    Pass preset ``speakers`` (CustomVoice) or already-resolved ``voices``
+    (presets or registered clone prompts), not both.
+    """
+    if (speakers is None) == (voices is None):
+        raise ValueError("pass exactly one of speakers or voices")
+    if voices is None:
+        assert speakers is not None
+        voices = [resolve_preset_voice(config, speaker) for speaker in speakers]
 
     tensors = [*text_inputs, *instruct_inputs]
     if any(not isinstance(value, torch.Tensor) for value in tensors):
@@ -110,12 +122,12 @@ def prepare_talker_input_plan(
         if any(value.device != device for value in tensors):
             raise ValueError("Talker text and instruction inputs must share one device")
     modes = tuple(TalkerInputMode.from_non_streaming_mode(value) for value in non_streaming_modes)
-    layout = build_batched_custom_voice_talker_token_layout(
+    layout = build_batched_talker_token_layout(
         config,
         text_inputs,
         instruct_inputs,
         languages=languages,
-        speakers=speakers,
+        voices=voices,
         non_streaming_modes=non_streaming_modes,
     )
     return TalkerInputPlan(

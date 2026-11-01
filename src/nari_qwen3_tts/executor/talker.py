@@ -37,6 +37,7 @@ from nari_qwen3_tts.executor.types import (
     TalkerResult,
     TalkerSamplingInput,
 )
+from nari_qwen3_tts.model.input_layout import ResolvedVoice
 
 
 class TalkerKVBackend(Protocol):
@@ -159,6 +160,7 @@ class TalkerExecutor:
         self.driver = driver or TorchCaptureDriver(device=self.device, autocast_dtype=self.dtype)
         self.submission_fence = submission_fence or CudaGraphPoolFence(device=self.device)
         self._suppress_mask: torch.Tensor | None = None
+        self._codec_table: torch.Tensor | None = None
         self._prefill: dict[TalkerPrefillCaptureKey, tuple[_PrefillSlot, ...]] = {}
         self._decode: dict[TalkerDecodeCaptureKey, tuple[_DecodeSlot, ...]] = {}
         self._next_prefill: dict[TalkerPrefillCaptureKey, int] = {}
@@ -188,8 +190,9 @@ class TalkerExecutor:
         text_inputs: list[torch.Tensor],
         instruct_inputs: list[torch.Tensor],
         languages: list[str],
-        speakers: list[str],
+        speakers: list[str] | None = None,
         non_streaming_modes: list[bool],
+        voices: list[ResolvedVoice] | None = None,
     ) -> TalkerInputPlan:
         return prepare_talker_input_plan(
             self.config,
@@ -198,16 +201,42 @@ class TalkerExecutor:
             languages=languages,
             speakers=speakers,
             non_streaming_modes=non_streaming_modes,
+            voices=voices,
         )
 
-    def prepare_prepared_inputs(self, prepared_inputs: list[EncodedText]) -> TalkerInputPlan:
+    def prepare_prepared_inputs(
+        self,
+        prepared_inputs: list[EncodedText],
+        *,
+        voices: list[ResolvedVoice] | None = None,
+    ) -> TalkerInputPlan:
         return self.prepare_input_plan(
             text_inputs=[prepared.text_token_ids for prepared in prepared_inputs],
             instruct_inputs=[prepared.instruct_token_ids for prepared in prepared_inputs],
             languages=[prepared.request.language for prepared in prepared_inputs],
-            speakers=[prepared.request.voice for prepared in prepared_inputs],
+            speakers=None if voices is not None else [prepared.request.voice for prepared in prepared_inputs],
             non_streaming_modes=[prepared.request.non_streaming_mode for prepared in prepared_inputs],
+            voices=voices,
         )
+
+    def attach_codec_table(self, table: torch.Tensor) -> None:
+        """Route prefill codec lookups through an extended (checkpoint + voice rows) table.
+
+        Must happen before capture: captured graphs bake in the table address.
+        Rows ``[0, vocab_size)`` must equal the checkpoint codec embedding.
+        """
+        if self._prefill or self._decode:
+            raise RuntimeError("the codec table must be attached before CUDA Graph capture")
+        weight = self.model.get_input_embeddings().weight
+        if table.ndim != 2 or table.shape[1] != weight.shape[1] or table.shape[0] < weight.shape[0]:
+            raise ValueError("extended codec table must be [vocab + voice_rows, hidden]")
+        if table.dtype != weight.dtype or table.device != weight.device:
+            raise ValueError("extended codec table must match the checkpoint embedding dtype and device")
+        self._codec_table = table
+
+    @property
+    def codec_table(self) -> torch.Tensor:
+        return self._codec_table if self._codec_table is not None else self.model.get_input_embeddings().weight
 
     @staticmethod
     def _sample_direct(logits: torch.Tensor, values: TalkerSamplingInput) -> torch.Tensor:
@@ -250,7 +279,7 @@ class TalkerExecutor:
         codec_token_mask: torch.Tensor,
     ) -> torch.Tensor:
         text = F.embedding(text_token_ids, self.model.get_projected_text_embedding_cache())
-        codec = F.embedding(codec_token_ids, self.model.get_input_embeddings().weight)
+        codec = F.embedding(codec_token_ids, self.codec_table)
         return torch.where(codec_token_mask.unsqueeze(1), text + codec, text)
 
     def materialize_decode(
