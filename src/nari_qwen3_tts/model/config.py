@@ -9,13 +9,16 @@ from pathlib import Path
 from typing import Any
 
 _MODEL_TYPE = "qwen3_tts"
-_TTS_MODEL_TYPE = "custom_voice"
+TTS_MODEL_TYPE_CUSTOM_VOICE = "custom_voice"
+TTS_MODEL_TYPE_BASE = "base"
+_TTS_MODEL_TYPES = frozenset({TTS_MODEL_TYPE_CUSTOM_VOICE, TTS_MODEL_TYPE_BASE})
 _TTS_MODEL_SIZE = "1b7"
 _TOKENIZER_TYPE = "qwen3_tts_tokenizer_12hz"
 _NUM_CODE_GROUPS = 16
 _SUPPORTED_SPEAKERS = frozenset(
     {"aiden", "dylan", "eric", "ono_anna", "ryan", "serena", "sohee", "uncle_fu", "vivian"}
 )
+_DIALECT_LANGUAGES = frozenset({"beijing_dialect", "sichuan_dialect"})
 _SUPPORTED_LANGUAGES = frozenset(
     {
         "beijing_dialect",
@@ -107,12 +110,28 @@ class Qwen3TTSTalkerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class Qwen3TTSSpeakerEncoderConfig:
+    """Base-checkpoint speaker encoder facts (ECAPA-TDNN x-vector extractor)."""
+
+    enc_dim: int
+    sample_rate: int
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class Qwen3TTSConfig:
     talker: Qwen3TTSTalkerConfig
     tts_bos_token_id: int
     tts_eos_token_id: int
     tts_pad_token_id: int
     tokenizer_type: str
+    tts_model_type: str = TTS_MODEL_TYPE_CUSTOM_VOICE
+    speaker_encoder: Qwen3TTSSpeakerEncoderConfig | None = None
+
+    @property
+    def is_base(self) -> bool:
+        """Base checkpoints clone voices from reference audio instead of preset speakers."""
+        return self.tts_model_type == TTS_MODEL_TYPE_BASE
 
     @property
     def talker_config(self) -> Qwen3TTSTalkerConfig:
@@ -206,12 +225,24 @@ class Qwen3TTSConfig:
             spk_is_dialect=dict(talker_raw["spk_is_dialect"]),
             code_predictor=cp,
         )
+        speaker_encoder = None
+        if raw["tts_model_type"] == TTS_MODEL_TYPE_BASE:
+            encoder_raw = raw.get("speaker_encoder_config")
+            if not isinstance(encoder_raw, dict):
+                raise ValueError("Base Qwen3-TTS checkpoint is missing speaker_encoder_config")
+            speaker_encoder = Qwen3TTSSpeakerEncoderConfig(
+                enc_dim=_required_int(encoder_raw, "enc_dim", "speaker encoder enc_dim"),
+                sample_rate=_required_int(encoder_raw, "sample_rate", "speaker encoder sample_rate"),
+                raw=dict(encoder_raw),
+            )
         config = cls(
             talker=talker,
             tts_bos_token_id=_required_int(raw, "tts_bos_token_id", "tts_bos_token_id"),
             tts_eos_token_id=_required_int(raw, "tts_eos_token_id", "tts_eos_token_id"),
             tts_pad_token_id=_required_int(raw, "tts_pad_token_id", "tts_pad_token_id"),
             tokenizer_type=str(raw["tokenizer_type"]),
+            tts_model_type=str(raw["tts_model_type"]),
+            speaker_encoder=speaker_encoder,
         )
         _validate_fixed_contract(config)
         return config
@@ -220,13 +251,17 @@ class Qwen3TTSConfig:
 def _validate_model_identity(raw: dict[str, Any]) -> None:
     expected = {
         "model_type": _MODEL_TYPE,
-        "tts_model_type": _TTS_MODEL_TYPE,
         "tts_model_size": _TTS_MODEL_SIZE,
         "tokenizer_type": _TOKENIZER_TYPE,
     }
     for name, value in expected.items():
         if raw.get(name) != value:
             raise ValueError(f"unsupported Qwen3-TTS {name}: {raw.get(name)!r}; expected {value!r}")
+    if raw.get("tts_model_type") not in _TTS_MODEL_TYPES:
+        raise ValueError(
+            f"unsupported Qwen3-TTS tts_model_type: {raw.get('tts_model_type')!r}; "
+            f"expected one of {sorted(_TTS_MODEL_TYPES)}"
+        )
 
 
 def _validate_attention_contract(
@@ -257,7 +292,15 @@ def _validate_attention_contract(
         raise ValueError(f"{label} rope_theta must be positive")
 
 
-def _validate_model_domain(talker: Qwen3TTSTalkerConfig) -> None:
+def _validate_model_domain(talker: Qwen3TTSTalkerConfig, *, tts_model_type: str) -> None:
+    if tts_model_type == TTS_MODEL_TYPE_BASE:
+        # Base checkpoints ship no preset speakers and no dialect language tags;
+        # every voice comes from a registered reference prompt.
+        if talker.spk_id or talker.spk_is_dialect:
+            raise ValueError("Base Qwen3-TTS checkpoint must not define preset speakers")
+        if set(talker.codec_language_id) != _SUPPORTED_LANGUAGES - _DIALECT_LANGUAGES:
+            raise ValueError("Base Qwen3-TTS language map does not match the supported fixed model domain")
+        return
     if set(talker.spk_id) != _SUPPORTED_SPEAKERS:
         raise ValueError("Qwen3-TTS speaker map does not match the supported fixed model domain")
     if set(talker.spk_is_dialect) != _SUPPORTED_SPEAKERS:
@@ -310,8 +353,20 @@ def _validate_fixed_contract(config: Qwen3TTSConfig) -> None:
         raise ValueError(f"Code Predictor must use exactly {_NUM_CODE_GROUPS} code groups")
     _validate_attention_contract(talker, label="Talker")
     _validate_attention_contract(predictor, label="Code Predictor")
-    _validate_model_domain(talker)
+    _validate_model_domain(talker, tts_model_type=config.tts_model_type)
     _validate_token_ids(config)
+    if config.is_base and config.speaker_encoder is not None:
+        if config.speaker_encoder.enc_dim != talker.hidden_size:
+            raise ValueError("speaker encoder enc_dim must equal the Talker hidden size")
+        if config.speaker_encoder.sample_rate != 24_000:
+            raise ValueError("speaker encoder must run at 24 kHz")
 
 
-__all__ = ["Qwen3TTSCodePredictorConfig", "Qwen3TTSConfig", "Qwen3TTSTalkerConfig"]
+__all__ = [
+    "TTS_MODEL_TYPE_BASE",
+    "TTS_MODEL_TYPE_CUSTOM_VOICE",
+    "Qwen3TTSCodePredictorConfig",
+    "Qwen3TTSConfig",
+    "Qwen3TTSSpeakerEncoderConfig",
+    "Qwen3TTSTalkerConfig",
+]

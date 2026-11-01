@@ -117,7 +117,8 @@ def _replace(raw: dict[str, object], path: tuple[str, ...], value: object) -> di
     ("path", "value", "message"),
     [
         (("model_type",), "qwen2", "model_type"),
-        (("tts_model_type",), "base", "tts_model_type"),
+        (("tts_model_type",), "voice_design", "tts_model_type"),
+        (("tts_model_type",), "base", "speaker_encoder_config"),
         (("tts_model_size",), "0b6", "tts_model_size"),
         (("tokenizer_type",), "qwen2", "tokenizer_type"),
         (("talker_config", "num_code_groups"), 15, "code groups"),
@@ -190,4 +191,38 @@ def test_snapshot_config_rejects_colliding_or_out_of_vocabulary_model_ids(
 ) -> None:
     (tmp_path / "config.json").write_text(json.dumps(_replace(_raw_config(), path, value)))
     with pytest.raises(ValueError, match=message):
+        Qwen3TTSConfig.from_pretrained_dir(tmp_path)
+
+
+def _base_config() -> dict:
+    raw = _raw_config()
+    raw["tts_model_type"] = "base"
+    raw["speaker_encoder_config"] = {"enc_dim": raw["talker_config"]["hidden_size"], "sample_rate": 24000}
+    talker = raw["talker_config"]
+    talker["spk_id"] = {}
+    talker["spk_is_dialect"] = {}
+    for dialect in ("beijing_dialect", "sichuan_dialect"):
+        talker["codec_language_id"].pop(dialect)
+    return raw
+
+
+def test_base_checkpoint_config_is_accepted(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(_base_config()))
+    config = Qwen3TTSConfig.from_pretrained_dir(tmp_path)
+    assert config.is_base
+    assert config.speaker_encoder is not None and config.speaker_encoder.sample_rate == 24000
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("talker_config", "spk_id"), {"aiden": 40}, "preset speakers"),
+        (("speaker_encoder_config", "enc_dim"), 7, "enc_dim"),
+        (("speaker_encoder_config", "sample_rate"), 16000, "24 kHz"),
+        (("talker_config", "codec_language_id", "beijing_dialect"), 2074, "language map"),
+    ],
+)
+def test_base_checkpoint_config_fails_closed(tmp_path, path, value, message) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(_replace(_base_config(), path, value)))
+    with pytest.raises((TypeError, ValueError), match=message):
         Qwen3TTSConfig.from_pretrained_dir(tmp_path)
