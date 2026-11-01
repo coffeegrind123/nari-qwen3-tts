@@ -12,6 +12,11 @@
 > median / 57 ms p95 over a 90-utterance local panel. These measurements do not
 > claim upstream's H100 throughput. See the reproducible
 > [Model Skyline comparison](https://github.com/bglusman/model_skyline/blob/main/examples/voice-runtime-frontiers/README.md#what-the-matched-winner-comparison-adds).
+>
+> On top of that, this fork serves the **Qwen3-TTS 1.7B Base** checkpoint with
+> **voice cloning** (x-vector and in-context reference prompts) through the same
+> CUDA Graph engine, and adds an `ada24g` profile for 24 GB Ada GPUs. See
+> [Voice cloning](#voice-cloning-base-checkpoint).
 
 ## TL;DR
 
@@ -132,6 +137,9 @@ from nari_qwen3_tts import ModelAssetConfig, open_model
   throughput under load.
 - `consumer`: limits execution to one GPU row and a reduced capture/cache
   surface for experimental use on roughly 16 GB CUDA GPUs.
+- `ada24g`: 24 GB Ada GPUs (RTX 4090 class) with `--allow-non-h100`: BF16
+  Talker, batches up to 16, prefill buckets up to 1024 tokens for clone
+  prompts, and a KV budget that leaves VRAM for other processes.
 
 Select a Docker profile with `QWEN3_TTS_PROFILE`, or pass `--profile` to
 `nari-qwen3-tts-server`. You can also set `QWEN3_TTS_MODEL_CACHE_DIR` and
@@ -150,6 +158,38 @@ The overlay may name its packaged base with `extends: ttfa`, `balanced`,
 Unknown keys, invalid capture lists, and profile/base mismatches fail before
 model loading. The fully resolved config and its SHA-256 are printed at
 startup.
+
+## Voice cloning (Base checkpoint)
+
+Serve `Qwen/Qwen3-TTS-12Hz-1.7B-Base` instead of CustomVoice and register
+voices from reference audio:
+
+```bash
+nari-qwen3-tts-server --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --revision fd4b254389122332181a7c3db7f27e918eec64e3 \
+  --allow-non-h100 --profile ada24g
+```
+
+- `POST /v1/voices` `{"voice_id", "audio_base64", "ref_text"?, "x_vector_only"?, "xvector_audio_base64"?}`
+  builds a prompt with the checkpoint's own speaker encoder and 12 Hz speech
+  tokenizer, registers it, and returns it as `prompt_base64` (safetensors).
+- `PUT /v1/voices/{voice_id}` re-registers a stored prompt (the engine keeps
+  prompts in GPU memory only; persist `prompt_base64` yourself).
+- `GET /v1/voices`, `GET/DELETE /v1/voices/{voice_id}`.
+- `POST /v1/audio/speech` with `"voice": "<voice_id>"` and optional
+  `"voice_mode": "auto" | "icl" | "xvector"`. `auto` uses in-context
+  conditioning when the voice has a transcript, x-vector otherwise. Live
+  (WebSocket) input falls back to x-vector, because ICL places target text
+  alongside the reference frames in prefill. `instruct` is rejected: the Base
+  model has no instruction control.
+
+How it works: every clone input the official implementation passes as a float
+vector (the x-vector, and the summed 16-codebook embedding of each reference
+frame) is written into extra rows of an extended codec embedding table. The
+prompt then stays a sequence of integer ids, so the captured prefill CUDA
+Graphs run unchanged. `tests/voice_clone/` checks the resulting embeddings
+against a transcription of `qwen-tts` 0.1.1's `generate` /
+`generate_icl_prompt` for both input modes.
 
 ## API and architecture
 
