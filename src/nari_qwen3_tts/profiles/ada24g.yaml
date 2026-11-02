@@ -1,3 +1,8 @@
+# Measured on an RTX 4090 (24 GB, SM 8.9), Base checkpoint, BF16 Talker:
+#   batches up to 16 / 192 KV pages / 2 capture slots: engine ~15.4 GB resident
+#   this profile (batches up to 8 / 128 pages / 1 slot):  engine ~12.0 GB resident
+#   same speed: ~0.3 s to first byte and ~0.65 s for a 5.3 s sentence (via an mp3 gateway);
+#   4 concurrent requests each ~0.42 s to first byte.
 profile: ada24g
 required_policy: deadline_aware
 pressing_lead_s: 1.0
@@ -8,29 +13,29 @@ talker_prefill:
   exact_sequence_lengths: [10]
   exact_batch_sizes: [1, 2, 3, 4]
 talker_decode:
-  max_batch_size: 16
-  batch_sizes: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16]
+  max_batch_size: 8
+  batch_sizes: [1, 2, 3, 4, 5, 6, 7, 8]
 code_predictor:
-  max_batch_size: 16
-  batch_sizes: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16]
+  max_batch_size: 8
+  batch_sizes: [1, 2, 3, 4, 5, 6, 7, 8]
 codec:
-  max_batch_size: 16
+  max_batch_size: 8
   chunk_schedule: [1, 2, 4, 8, 12]
   suppressed_bootstrap_chunk_schedule: [2, 4, 8, 12]
   batches:
-    whole_sequence_first_frame: [1, 2, 4, 8, 16]
+    whole_sequence_first_frame: [1, 2, 4, 8]
     whole_sequence_followup: [1, 2, 4, 8]
     cold: [1, 2, 4, 8]
     cold_terminal_partial: []
     warm_partial: [1, 2, 3, 4, 5, 6, 7, 8]
-    warm_full: [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 16]
+    warm_full: [1, 2, 3, 4, 5, 6, 7, 8]
   frames:
     cold: [4, 5, 6, 7]
     cold_terminal_partial: []
     warm: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     warm_full: [12]
     terminal_pad: [12]
-talker_capture_slots: 2
-kv_pages: 192
+talker_capture_slots: 1
+kv_pages: 128
 kv_page_size: 128
 workspace_bytes: 268435456
